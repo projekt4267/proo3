@@ -189,7 +189,7 @@ def clear_memories(chat_id):
 # =========================
 
 def send_message(chat_id, text):
-    # Разбиваем длинный ответ на части.
+
     while len(text) > 4000:
 
         split_at = text.rfind("\n", 0, 4000)
@@ -220,6 +220,7 @@ def send_message(chat_id, text):
 
 
 def typing(chat_id):
+
     try:
         requests.post(
             f"{TELEGRAM_API}/sendChatAction",
@@ -229,6 +230,7 @@ def typing(chat_id):
             },
             timeout=10
         )
+
     except Exception:
         pass
 
@@ -250,6 +252,7 @@ def ask_ai(chat_id, user_text):
     ]
 
     if memories:
+
         memory_text = "\n".join(
             f"- {memory}"
             for memory in memories
@@ -270,6 +273,13 @@ def ask_ai(chat_id, user_text):
         "content": user_text
     })
 
+    # Проверяем, что ключ вообще загружен.
+    print("OpenRouter key exists:", bool(OPENROUTER_API_KEY))
+    print(
+        "OpenRouter key prefix:",
+        OPENROUTER_API_KEY[:10] if OPENROUTER_API_KEY else "EMPTY"
+    )
+
     response = requests.post(
         OPENROUTER_API,
         headers={
@@ -283,11 +293,27 @@ def ask_ai(chat_id, user_text):
         timeout=90
     )
 
+    # Показываем реальный ответ OpenRouter в Render Logs.
+    print("OpenRouter status:", response.status_code)
+    print("OpenRouter response:", response.text)
+
     response.raise_for_status()
 
     data = response.json()
 
-    return data["choices"][0]["message"]["content"]
+    if "choices" not in data or not data["choices"]:
+        raise RuntimeError(
+            f"OpenRouter не вернул choices: {data}"
+        )
+
+    answer = data["choices"][0]["message"]["content"]
+
+    if not answer:
+        raise RuntimeError(
+            "OpenRouter вернул пустой ответ"
+        )
+
+    return answer
 
 
 # =========================
@@ -302,7 +328,7 @@ def command(chat_id, text):
 
         send_message(
             chat_id,
-            "👋 Привет! Я **ZentraAI**.\n\n"
+            "👋 Привет! Я ZentraAI.\n\n"
             "Я могу общаться с тобой, помнить контекст "
             "разговора и сохранять важную информацию о тебе.\n\n"
             "🧠 Память включена\n"
@@ -317,7 +343,7 @@ def command(chat_id, text):
 
         send_message(
             chat_id,
-            "🤖 **ZentraAI**\n\n"
+            "🤖 ZentraAI\n\n"
             "/start — запустить бота\n"
             "/help — помощь\n"
             "/memory — что я помню о тебе\n"
@@ -333,7 +359,7 @@ def command(chat_id, text):
 
         send_message(
             chat_id,
-            f"🆔 ID этого чата:\n`{chat_id}`"
+            f"🆔 ID этого чата:\n{chat_id}"
         )
 
         return True
@@ -362,7 +388,7 @@ def command(chat_id, text):
 
         else:
 
-            text = "🧠 **Что я помню:**\n\n"
+            text = "🧠 Что я помню:\n\n"
 
             for memory in memories:
                 text += f"• {memory}\n"
@@ -391,6 +417,7 @@ def command(chat_id, text):
 
 @app.route("/")
 def home():
+
     return "ZentraAI v2 is running! 🤖"
 
 
@@ -424,6 +451,7 @@ def webhook():
             return "ok"
 
         if text.startswith("/"):
+
             if command(chat_id, text):
                 return "ok"
 
@@ -442,7 +470,9 @@ def webhook():
                 text
             )
 
-        except requests.exceptions.Timeout:
+        except requests.exceptions.Timeout as error:
+
+            print("OpenRouter timeout:", error)
 
             send_message(
                 chat_id,
@@ -451,13 +481,24 @@ def webhook():
 
             return "ok"
 
-        except requests.exceptions.RequestException as error:
+        except requests.exceptions.HTTPError as error:
 
-            print("OpenRouter error:", error)
+            print("OpenRouter HTTP error:", error)
 
             send_message(
                 chat_id,
-                "⚠️ Не удалось связаться с AI. Попробуй через несколько секунд."
+                "⚠️ OpenRouter отклонил запрос. Подробность есть в Render Logs."
+            )
+
+            return "ok"
+
+        except requests.exceptions.RequestException as error:
+
+            print("OpenRouter connection error:", error)
+
+            send_message(
+                chat_id,
+                "⚠️ Не удалось связаться с OpenRouter."
             )
 
             return "ok"
@@ -468,7 +509,7 @@ def webhook():
 
             send_message(
                 chat_id,
-                "⚠️ Произошла ошибка. Попробуй ещё раз."
+                "⚠️ Произошла ошибка AI. Подробность есть в Render Logs."
             )
 
             return "ok"
@@ -498,8 +539,11 @@ def webhook():
 # =========================
 
 try:
+
     init_db()
+
 except Exception as error:
+
     print("Database initialization error:", error)
 
 
