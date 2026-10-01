@@ -1,5 +1,5 @@
 import os
-import sqlite3
+import psycopg
 import requests
 
 from flask import Flask, request
@@ -8,26 +8,27 @@ app = Flask(__name__)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
+DATABASE_URL = os.environ["DATABASE_URL"]
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions"
 
-DB_FILE = "memory.db"
 
 SYSTEM_PROMPT = """
-Ты — ZentraAI, дружелюбный и умный AI-ассистент.
+Ты — ZentraAI, дружелюбный персональный AI-ассистент.
 
-Твой характер:
-- отвечай естественно и по-человечески;
-- будь дружелюбным, но не навязчивым;
-- объясняй сложные вещи простыми словами;
-- если пользователь просит подробный ответ — отвечай подробно;
-- если вопрос простой — не растягивай ответ;
-- используй русский язык, если пользователь пишет по-русски;
-- не придумывай факты, если не уверен;
-- можешь использовать эмодзи, но умеренно.
+Характер:
+- дружелюбный;
+- спокойный;
+- умный;
+- отвечай естественно;
+- объясняй сложное простыми словами;
+- не используй слишком много эмодзи;
+- отвечай на языке пользователя;
+- учитывай контекст предыдущего разговора;
+- не выдумывай информацию, если не уверен.
 
-Ты находишься внутри Telegram-бота под названием ZentraAI.
+Ты работаешь внутри Telegram.
 """
 
 
@@ -35,36 +36,95 @@ SYSTEM_PROMPT = """
 # DATABASE
 # =========================
 
+def db():
+    return psycopg.connect(DATABASE_URL)
+
+
 def init_db():
-    connection = sqlite3.connect(DB_FILE)
+    with db() as conn:
+        with conn.cursor() as cur:
 
-    connection.execute("""
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id TEXT NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL
-        )
-    """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    chat_id BIGINT PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
 
-    connection.commit()
-    connection.close()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS messages (
+                    id SERIAL PRIMARY KEY,
+                    chat_id BIGINT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS memories (
+                    id SERIAL PRIMARY KEY,
+                    chat_id BIGINT NOT NULL,
+                    memory TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+        conn.commit()
+
+
+def save_user(chat):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO users
+                    (chat_id, username, first_name)
+                VALUES
+                    (%s, %s, %s)
+                ON CONFLICT (chat_id)
+                DO UPDATE SET
+                    username = EXCLUDED.username,
+                    first_name = EXCLUDED.first_name,
+                    last_seen = CURRENT_TIMESTAMP
+            """, (
+                chat["id"],
+                chat.get("username"),
+                chat.get("first_name")
+            ))
+
+        conn.commit()
+
+
+def save_message(chat_id, role, content):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO messages
+                    (chat_id, role, content)
+                VALUES
+                    (%s, %s, %s)
+            """, (chat_id, role, content))
+
+        conn.commit()
 
 
 def get_history(chat_id):
-    connection = sqlite3.connect(DB_FILE)
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT role, content
+                FROM messages
+                WHERE chat_id = %s
+                ORDER BY id DESC
+                LIMIT 20
+            """, (chat_id,))
 
-    rows = connection.execute(
-        """
-        SELECT role, content
-        FROM messages
-        WHERE chat_id = ?
-        ORDER BY id ASC
-        """,
-        (str(chat_id),)
-    ).fetchall()
+            rows = cur.fetchall()
 
-    connection.close()
+    rows.reverse()
 
     return [
         {
@@ -75,31 +135,53 @@ def get_history(chat_id):
     ]
 
 
-def save_message(chat_id, role, content):
-    connection = sqlite3.connect(DB_FILE)
-
-    connection.execute(
-        """
-        INSERT INTO messages (chat_id, role, content)
-        VALUES (?, ?, ?)
-        """,
-        (str(chat_id), role, content)
-    )
-
-    connection.commit()
-    connection.close()
-
-
 def clear_history(chat_id):
-    connection = sqlite3.connect(DB_FILE)
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                DELETE FROM messages
+                WHERE chat_id = %s
+            """, (chat_id,))
 
-    connection.execute(
-        "DELETE FROM messages WHERE chat_id = ?",
-        (str(chat_id),)
-    )
+        conn.commit()
 
-    connection.commit()
-    connection.close()
+
+def get_memories(chat_id):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT memory
+                FROM memories
+                WHERE chat_id = %s
+                ORDER BY id DESC
+                LIMIT 20
+            """, (chat_id,))
+
+            return [row[0] for row in cur.fetchall()]
+
+
+def add_memory(chat_id, memory):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO memories
+                    (chat_id, memory)
+                VALUES
+                    (%s, %s)
+            """, (chat_id, memory))
+
+        conn.commit()
+
+
+def clear_memories(chat_id):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                DELETE FROM memories
+                WHERE chat_id = %s
+            """, (chat_id,))
+
+        conn.commit()
 
 
 # =========================
@@ -107,32 +189,37 @@ def clear_history(chat_id):
 # =========================
 
 def send_message(chat_id, text):
-    # Telegram имеет ограничение примерно 4096 символов.
-    chunks = []
-
+    # Разбиваем длинный ответ на части.
     while len(text) > 4000:
+
         split_at = text.rfind("\n", 0, 4000)
 
         if split_at < 1000:
             split_at = 4000
 
-        chunks.append(text[:split_at])
+        part = text[:split_at]
         text = text[split_at:]
 
-    chunks.append(text)
-
-    for chunk in chunks:
         requests.post(
             f"{TELEGRAM_API}/sendMessage",
             json={
                 "chat_id": chat_id,
-                "text": chunk
+                "text": part
             },
             timeout=30
         )
 
+    requests.post(
+        f"{TELEGRAM_API}/sendMessage",
+        json={
+            "chat_id": chat_id,
+            "text": text
+        },
+        timeout=30
+    )
 
-def send_typing(chat_id):
+
+def typing(chat_id):
     try:
         requests.post(
             f"{TELEGRAM_API}/sendChatAction",
@@ -153,6 +240,7 @@ def send_typing(chat_id):
 def ask_ai(chat_id, user_text):
 
     history = get_history(chat_id)
+    memories = get_memories(chat_id)
 
     messages = [
         {
@@ -161,9 +249,21 @@ def ask_ai(chat_id, user_text):
         }
     ]
 
-    # Ограничиваем количество старых сообщений,
-    # чтобы история не становилась бесконечной.
-    messages.extend(history[-20:])
+    if memories:
+        memory_text = "\n".join(
+            f"- {memory}"
+            for memory in memories
+        )
+
+        messages.append({
+            "role": "system",
+            "content": (
+                "Важная информация о пользователе:\n"
+                + memory_text
+            )
+        })
+
+    messages.extend(history)
 
     messages.append({
         "role": "user",
@@ -187,78 +287,118 @@ def ask_ai(chat_id, user_text):
 
     data = response.json()
 
-    answer = data["choices"][0]["message"]["content"]
-
-    return answer
+    return data["choices"][0]["message"]["content"]
 
 
 # =========================
 # COMMANDS
 # =========================
 
-def handle_command(chat_id, command):
+def command(chat_id, text):
 
-    command = command.lower().split("@")[0]
+    cmd = text.lower().split("@")[0].split()[0]
 
-    if command == "/start":
+    if cmd == "/start":
+
         send_message(
             chat_id,
             "👋 Привет! Я **ZentraAI**.\n\n"
-            "Я могу отвечать на вопросы, поддерживать разговор "
-            "и помнить контекст нашей беседы.\n\n"
-            "🧠 Память — включена\n"
-            "🤖 AI — подключён\n\n"
+            "Я могу общаться с тобой, помнить контекст "
+            "разговора и сохранять важную информацию о тебе.\n\n"
+            "🧠 Память включена\n"
+            "💬 История сохраняется\n"
+            "🤖 AI подключён\n\n"
             "Напиши мне что-нибудь!"
         )
+
         return True
 
-    if command == "/help":
+    if cmd == "/help":
+
         send_message(
             chat_id,
-            "🤖 **ZentraAI — команды**\n\n"
+            "🤖 **ZentraAI**\n\n"
             "/start — запустить бота\n"
-            "/help — показать помощь\n"
-            "/reset — очистить память разговора\n"
-            "/model — информация о модели\n\n"
-            "Просто отправь сообщение, чтобы поговорить со мной."
+            "/help — помощь\n"
+            "/memory — что я помню о тебе\n"
+            "/forget — забыть всё о тебе\n"
+            "/reset — очистить текущий разговор\n"
+            "/id — показать ID этого чата\n\n"
+            "Просто напиши сообщение, чтобы поговорить со мной."
         )
+
         return True
 
-    if command == "/reset":
+    if cmd == "/id":
+
+        send_message(
+            chat_id,
+            f"🆔 ID этого чата:\n`{chat_id}`"
+        )
+
+        return True
+
+    if cmd == "/reset":
+
         clear_history(chat_id)
 
         send_message(
             chat_id,
-            "🧹 Память этого разговора очищена.\n\n"
-            "Начинаем с чистого листа!"
+            "🧹 История текущего разговора очищена."
         )
+
         return True
 
-    if command == "/model":
+    if cmd == "/memory":
+
+        memories = get_memories(chat_id)
+
+        if not memories:
+
+            send_message(
+                chat_id,
+                "🧠 Я пока ничего специально о тебе не запомнил."
+            )
+
+        else:
+
+            text = "🧠 **Что я помню:**\n\n"
+
+            for memory in memories:
+                text += f"• {memory}\n"
+
+            send_message(chat_id, text)
+
+        return True
+
+    if cmd == "/forget":
+
+        clear_memories(chat_id)
+
         send_message(
             chat_id,
-            "🧠 **ZentraAI**\n\n"
-            "Модель выбирается через OpenRouter.\n"
-            "Сейчас используется бесплатный маршрутизатор OpenRouter."
+            "🧹 Я удалил сохранённую память о тебе."
         )
+
         return True
 
     return False
 
 
 # =========================
-# WEB SERVER
+# WEBHOOK
 # =========================
 
 @app.route("/")
 def home():
-    return "ZentraAI is running! 🤖"
+    return "ZentraAI v2 is running! 🤖"
 
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
 
     try:
+
         update = request.get_json(silent=True)
 
         if not update:
@@ -276,19 +416,19 @@ def webhook():
 
         chat_id = chat["id"]
 
+        save_user(chat)
+
         text = message.get("text")
 
         if not text:
             return "ok"
 
-        # Команды
         if text.startswith("/"):
-            if handle_command(chat_id, text):
+            if command(chat_id, text):
                 return "ok"
 
-        send_typing(chat_id)
+        typing(chat_id)
 
-        # Сохраняем вопрос пользователя
         save_message(
             chat_id,
             "user",
@@ -296,6 +436,7 @@ def webhook():
         )
 
         try:
+
             answer = ask_ai(
                 chat_id,
                 text
@@ -327,12 +468,11 @@ def webhook():
 
             send_message(
                 chat_id,
-                "⚠️ Произошла ошибка при обработке сообщения."
+                "⚠️ Произошла ошибка. Попробуй ещё раз."
             )
 
             return "ok"
 
-        # Сохраняем ответ AI
         save_message(
             chat_id,
             "assistant",
@@ -357,7 +497,10 @@ def webhook():
 # START
 # =========================
 
-init_db()
+try:
+    init_db()
+except Exception as error:
+    print("Database initialization error:", error)
 
 
 if __name__ == "__main__":
