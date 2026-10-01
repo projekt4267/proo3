@@ -6,13 +6,28 @@ from flask import Flask, request
 
 app = Flask(__name__)
 
+
+# =========================================================
+# ENVIRONMENT VARIABLES
+# =========================================================
+
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
+DEEPSEEK_API_KEY = os.environ["DEEPSEEK_API_KEY"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 
-TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions"
 
+# =========================================================
+# API
+# =========================================================
+
+TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+DEEPSEEK_API = "https://api.deepseek.com/chat/completions"
+
+
+# =========================================================
+# SYSTEM PROMPT
+# =========================================================
 
 SYSTEM_PROMPT = """
 Ты — ZentraAI, дружелюбный персональный AI-ассистент.
@@ -32,16 +47,18 @@ SYSTEM_PROMPT = """
 """
 
 
-# =========================
+# =========================================================
 # DATABASE
-# =========================
+# =========================================================
 
 def db():
     return psycopg.connect(DATABASE_URL)
 
 
 def init_db():
+
     with db() as conn:
+
         with conn.cursor() as cur:
 
             cur.execute("""
@@ -77,8 +94,11 @@ def init_db():
 
 
 def save_user(chat):
+
     with db() as conn:
+
         with conn.cursor() as cur:
+
             cur.execute("""
                 INSERT INTO users
                     (chat_id, username, first_name)
@@ -99,21 +119,31 @@ def save_user(chat):
 
 
 def save_message(chat_id, role, content):
+
     with db() as conn:
+
         with conn.cursor() as cur:
+
             cur.execute("""
                 INSERT INTO messages
                     (chat_id, role, content)
                 VALUES
                     (%s, %s, %s)
-            """, (chat_id, role, content))
+            """, (
+                chat_id,
+                role,
+                content
+            ))
 
         conn.commit()
 
 
 def get_history(chat_id):
+
     with db() as conn:
+
         with conn.cursor() as cur:
+
             cur.execute("""
                 SELECT role, content
                 FROM messages
@@ -136,8 +166,11 @@ def get_history(chat_id):
 
 
 def clear_history(chat_id):
+
     with db() as conn:
+
         with conn.cursor() as cur:
+
             cur.execute("""
                 DELETE FROM messages
                 WHERE chat_id = %s
@@ -147,8 +180,11 @@ def clear_history(chat_id):
 
 
 def get_memories(chat_id):
+
     with db() as conn:
+
         with conn.cursor() as cur:
+
             cur.execute("""
                 SELECT memory
                 FROM memories
@@ -157,25 +193,39 @@ def get_memories(chat_id):
                 LIMIT 20
             """, (chat_id,))
 
-            return [row[0] for row in cur.fetchall()]
+            rows = cur.fetchall()
+
+    return [
+        row[0]
+        for row in rows
+    ]
 
 
 def add_memory(chat_id, memory):
+
     with db() as conn:
+
         with conn.cursor() as cur:
+
             cur.execute("""
                 INSERT INTO memories
                     (chat_id, memory)
                 VALUES
                     (%s, %s)
-            """, (chat_id, memory))
+            """, (
+                chat_id,
+                memory
+            ))
 
         conn.commit()
 
 
 def clear_memories(chat_id):
+
     with db() as conn:
+
         with conn.cursor() as cur:
+
             cur.execute("""
                 DELETE FROM memories
                 WHERE chat_id = %s
@@ -184,11 +234,14 @@ def clear_memories(chat_id):
         conn.commit()
 
 
-# =========================
+# =========================================================
 # TELEGRAM
-# =========================
+# =========================================================
 
 def send_message(chat_id, text):
+
+    if not text:
+        return
 
     while len(text) > 4000:
 
@@ -200,28 +253,49 @@ def send_message(chat_id, text):
         part = text[:split_at]
         text = text[split_at:]
 
+        try:
+
+            requests.post(
+                f"{TELEGRAM_API}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": part
+                },
+                timeout=30
+            )
+
+        except Exception as error:
+
+            print(
+                "Telegram send error:",
+                error
+            )
+
+            return
+
+    try:
+
         requests.post(
             f"{TELEGRAM_API}/sendMessage",
             json={
                 "chat_id": chat_id,
-                "text": part
+                "text": text
             },
             timeout=30
         )
 
-    requests.post(
-        f"{TELEGRAM_API}/sendMessage",
-        json={
-            "chat_id": chat_id,
-            "text": text
-        },
-        timeout=30
-    )
+    except Exception as error:
+
+        print(
+            "Telegram send error:",
+            error
+        )
 
 
 def typing(chat_id):
 
     try:
+
         requests.post(
             f"{TELEGRAM_API}/sendChatAction",
             json={
@@ -235,13 +309,14 @@ def typing(chat_id):
         pass
 
 
-# =========================
-# AI
-# =========================
+# =========================================================
+# DEEPSEEK AI
+# =========================================================
 
 def ask_ai(chat_id, user_text):
 
     history = get_history(chat_id)
+
     memories = get_memories(chat_id)
 
     messages = [
@@ -250,6 +325,11 @@ def ask_ai(chat_id, user_text):
             "content": SYSTEM_PROMPT
         }
     ]
+
+
+    # -----------------------------------------------------
+    # MEMORY
+    # -----------------------------------------------------
 
     if memories:
 
@@ -266,79 +346,146 @@ def ask_ai(chat_id, user_text):
             )
         })
 
+
+    # -----------------------------------------------------
+    # HISTORY
+    # -----------------------------------------------------
+
     messages.extend(history)
+
+
+    # -----------------------------------------------------
+    # CURRENT USER MESSAGE
+    # -----------------------------------------------------
 
     messages.append({
         "role": "user",
         "content": user_text
     })
 
+
+    # -----------------------------------------------------
+    # DEBUG
+    # -----------------------------------------------------
+
     print(
-        "OpenRouter key exists:",
-        bool(OPENROUTER_API_KEY)
+        "DeepSeek key exists:",
+        bool(DEEPSEEK_API_KEY)
     )
 
     print(
-        "OpenRouter key prefix:",
-        OPENROUTER_API_KEY[:10]
-        if OPENROUTER_API_KEY
+        "DeepSeek key prefix:",
+        DEEPSEEK_API_KEY[:10]
+        if DEEPSEEK_API_KEY
         else "EMPTY"
     )
 
+
+    # -----------------------------------------------------
+    # REQUEST
+    # -----------------------------------------------------
+
     response = requests.post(
-        OPENROUTER_API,
+
+        DEEPSEEK_API,
+
         headers={
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
             "Content-Type": "application/json"
         },
+
         json={
-            "model": "qwen/qwen3.8-27b:free",
-            "messages": messages
+            "model": "deepseek-flash",
+            "messages": messages,
+            "stream": False
         },
+
         timeout=90
     )
 
+
+    # -----------------------------------------------------
+    # DEBUG RESPONSE
+    # -----------------------------------------------------
+
     print(
-        "OpenRouter status:",
+        "DeepSeek status:",
         response.status_code
     )
 
     print(
-        "OpenRouter response:",
+        "DeepSeek response:",
         response.text
     )
 
+
+    # -----------------------------------------------------
+    # CHECK HTTP
+    # -----------------------------------------------------
+
     response.raise_for_status()
+
+
+    # -----------------------------------------------------
+    # PARSE JSON
+    # -----------------------------------------------------
 
     data = response.json()
 
-    if "choices" not in data or not data["choices"]:
+
+    # -----------------------------------------------------
+    # CHECK CHOICES
+    # -----------------------------------------------------
+
+    if "choices" not in data:
+
         raise RuntimeError(
-            f"OpenRouter не вернул choices: {data}"
+            f"DeepSeek не вернул choices: {data}"
         )
+
+
+    if not data["choices"]:
+
+        raise RuntimeError(
+            f"DeepSeek вернул пустой choices: {data}"
+        )
+
+
+    # -----------------------------------------------------
+    # GET ANSWER
+    # -----------------------------------------------------
 
     answer = data["choices"][0]["message"]["content"]
 
+
     if not answer:
+
         raise RuntimeError(
-            "OpenRouter вернул пустой ответ"
+            "DeepSeek вернул пустой ответ"
         )
+
 
     return answer
 
 
-# =========================
+# =========================================================
 # COMMANDS
-# =========================
+# =========================================================
 
 def command(chat_id, text):
 
     cmd = text.lower().split("@")[0].split()[0]
 
+
+    # -----------------------------------------------------
+    # START
+    # -----------------------------------------------------
+
     if cmd == "/start":
 
         send_message(
             chat_id,
+
             "👋 Привет! Я ZentraAI.\n\n"
             "Я могу общаться с тобой, помнить контекст "
             "разговора и сохранять важную информацию о тебе.\n\n"
@@ -350,10 +497,16 @@ def command(chat_id, text):
 
         return True
 
+
+    # -----------------------------------------------------
+    # HELP
+    # -----------------------------------------------------
+
     if cmd == "/help":
 
         send_message(
             chat_id,
+
             "🤖 ZentraAI\n\n"
             "/start — запустить бота\n"
             "/help — помощь\n"
@@ -366,14 +519,25 @@ def command(chat_id, text):
 
         return True
 
+
+    # -----------------------------------------------------
+    # ID
+    # -----------------------------------------------------
+
     if cmd == "/id":
 
         send_message(
             chat_id,
+
             f"🆔 ID этого чата:\n{chat_id}"
         )
 
         return True
+
+
+    # -----------------------------------------------------
+    # RESET
+    # -----------------------------------------------------
 
     if cmd == "/reset":
 
@@ -381,19 +545,27 @@ def command(chat_id, text):
 
         send_message(
             chat_id,
+
             "🧹 История текущего разговора очищена."
         )
 
         return True
 
+
+    # -----------------------------------------------------
+    # MEMORY
+    # -----------------------------------------------------
+
     if cmd == "/memory":
 
         memories = get_memories(chat_id)
+
 
         if not memories:
 
             send_message(
                 chat_id,
+
                 "🧠 Я пока ничего специально о тебе не запомнил."
             )
 
@@ -402,11 +574,20 @@ def command(chat_id, text):
             text = "🧠 Что я помню:\n\n"
 
             for memory in memories:
+
                 text += f"• {memory}\n"
 
-            send_message(chat_id, text)
+            send_message(
+                chat_id,
+                text
+            )
 
         return True
+
+
+    # -----------------------------------------------------
+    # FORGET
+    # -----------------------------------------------------
 
     if cmd == "/forget":
 
@@ -414,17 +595,19 @@ def command(chat_id, text):
 
         send_message(
             chat_id,
+
             "🧹 Я удалил сохранённую память о тебе."
         )
 
         return True
 
+
     return False
 
 
-# =========================
-# WEBHOOK
-# =========================
+# =========================================================
+# HOME
+# =========================================================
 
 @app.route("/")
 def home():
@@ -432,47 +615,104 @@ def home():
     return "ZentraAI v2 is running! 🤖"
 
 
+# =========================================================
+# WEBHOOK
+# =========================================================
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
 
     try:
 
-        update = request.get_json(silent=True)
+        update = request.get_json(
+            silent=True
+        )
+
 
         if not update:
+
             return "ok"
 
-        message = update.get("message")
+
+        message = update.get(
+            "message"
+        )
+
 
         if not message:
+
             return "ok"
 
-        chat = message.get("chat")
+
+        chat = message.get(
+            "chat"
+        )
+
 
         if not chat:
+
             return "ok"
+
 
         chat_id = chat["id"]
 
+
+        # -------------------------------------------------
+        # SAVE USER
+        # -------------------------------------------------
+
         save_user(chat)
 
-        text = message.get("text")
+
+        # -------------------------------------------------
+        # GET TEXT
+        # -------------------------------------------------
+
+        text = message.get(
+            "text"
+        )
+
 
         if not text:
+
             return "ok"
+
+
+        # -------------------------------------------------
+        # COMMAND
+        # -------------------------------------------------
 
         if text.startswith("/"):
 
-            if command(chat_id, text):
+            if command(
+                chat_id,
+                text
+            ):
+
                 return "ok"
 
+
+        # -------------------------------------------------
+        # TYPING
+        # -------------------------------------------------
+
         typing(chat_id)
+
+
+        # -------------------------------------------------
+        # SAVE USER MESSAGE
+        # -------------------------------------------------
 
         save_message(
             chat_id,
             "user",
             text
         )
+
+
+        # =================================================
+        # ASK AI
+        # =================================================
 
         try:
 
@@ -481,47 +721,56 @@ def webhook():
                 text
             )
 
+
         except requests.exceptions.Timeout as error:
 
             print(
-                "OpenRouter timeout:",
+                "DeepSeek timeout:",
                 error
             )
 
             send_message(
                 chat_id,
-                "⏳ AI отвечает слишком долго. Попробуй ещё раз."
+
+                "⏳ AI отвечает слишком долго. "
+                "Попробуй ещё раз."
             )
 
             return "ok"
+
 
         except requests.exceptions.HTTPError as error:
 
             print(
-                "OpenRouter HTTP error:",
+                "DeepSeek HTTP error:",
                 error
             )
 
             send_message(
                 chat_id,
-                "⚠️ OpenRouter отклонил запрос. Проверь Render Logs."
+
+                "⚠️ DeepSeek отклонил запрос. "
+                "Подробность есть в Render Logs."
             )
 
             return "ok"
+
 
         except requests.exceptions.RequestException as error:
 
             print(
-                "OpenRouter connection error:",
+                "DeepSeek connection error:",
                 error
             )
 
             send_message(
                 chat_id,
-                "⚠️ Не удалось связаться с OpenRouter."
+
+                "⚠️ Не удалось связаться с DeepSeek."
             )
 
             return "ok"
+
 
         except Exception as error:
 
@@ -532,10 +781,17 @@ def webhook():
 
             send_message(
                 chat_id,
-                "⚠️ Произошла ошибка AI. Проверь Render Logs."
+
+                "⚠️ Произошла ошибка AI. "
+                "Проверь Render Logs."
             )
 
             return "ok"
+
+
+        # -------------------------------------------------
+        # SAVE AI MESSAGE
+        # -------------------------------------------------
 
         save_message(
             chat_id,
@@ -543,12 +799,19 @@ def webhook():
             answer
         )
 
+
+        # -------------------------------------------------
+        # SEND AI MESSAGE
+        # -------------------------------------------------
+
         send_message(
             chat_id,
             answer
         )
 
+
         return "ok"
+
 
     except Exception as error:
 
@@ -560,9 +823,9 @@ def webhook():
         return "ok"
 
 
-# =========================
-# START
-# =========================
+# =========================================================
+# DATABASE INITIALIZATION
+# =========================================================
 
 try:
 
@@ -575,6 +838,10 @@ except Exception as error:
         error
     )
 
+
+# =========================================================
+# START SERVER
+# =========================================================
 
 if __name__ == "__main__":
 
