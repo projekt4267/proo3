@@ -273,11 +273,16 @@ def ask_ai(chat_id, user_text):
         "content": user_text
     })
 
-    # Проверяем, что ключ вообще загружен.
-    print("OpenRouter key exists:", bool(OPENROUTER_API_KEY))
+    print(
+        "OpenRouter key exists:",
+        bool(OPENROUTER_API_KEY)
+    )
+
     print(
         "OpenRouter key prefix:",
-        OPENROUTER_API_KEY[:10] if OPENROUTER_API_KEY else "EMPTY"
+        OPENROUTER_API_KEY[:10]
+        if OPENROUTER_API_KEY
+        else "EMPTY"
     )
 
     response = requests.post(
@@ -287,15 +292,21 @@ def ask_ai(chat_id, user_text):
             "Content-Type": "application/json"
         },
         json={
-            "model": "openrouter/free",
+            "model": "qwen/qwen3.8-27b:free",
             "messages": messages
         },
         timeout=90
     )
 
-    # Показываем реальный ответ OpenRouter в Render Logs.
-    print("OpenRouter status:", response.status_code)
-    print("OpenRouter response:", response.text)
+    print(
+        "OpenRouter status:",
+        response.status_code
+    )
+
+    print(
+        "OpenRouter response:",
+        response.text
+    )
 
     response.raise_for_status()
 
@@ -472,7 +483,10 @@ def webhook():
 
         except requests.exceptions.Timeout as error:
 
-            print("OpenRouter timeout:", error)
+            print(
+                "OpenRouter timeout:",
+                error
+            )
 
             send_message(
                 chat_id,
@@ -483,18 +497,24 @@ def webhook():
 
         except requests.exceptions.HTTPError as error:
 
-            print("OpenRouter HTTP error:", error)
+            print(
+                "OpenRouter HTTP error:",
+                error
+            )
 
             send_message(
                 chat_id,
-                "⚠️ OpenRouter отклонил запрос. Подробность есть в Render Logs."
+                "⚠️ OpenRouter отклонил запрос. Проверь Render Logs."
             )
 
             return "ok"
 
         except requests.exceptions.RequestException as error:
 
-            print("OpenRouter connection error:", error)
+            print(
+                "OpenRouter connection error:",
+                error
+            )
 
             send_message(
                 chat_id,
@@ -505,11 +525,14 @@ def webhook():
 
         except Exception as error:
 
-            print("AI error:", error)
+            print(
+                "AI error:",
+                error
+            )
 
             send_message(
                 chat_id,
-                "⚠️ Произошла ошибка AI. Подробность есть в Render Logs."
+                "⚠️ Произошла ошибка AI. Проверь Render Logs."
             )
 
             return "ok"
@@ -529,7 +552,10 @@ def webhook():
 
     except Exception as error:
 
-        print("Webhook error:", error)
+        print(
+            "Webhook error:",
+            error
+        )
 
         return "ok"
 
@@ -544,7 +570,10 @@ try:
 
 except Exception as error:
 
-    print("Database initialization error:", error)
+    print(
+        "Database initialization error:",
+        error
+    )
 
 
 if __name__ == "__main__":
